@@ -1,5 +1,9 @@
 # JobTrail — Job Application Tracking System
 
+**Live demo:** https://jobtrail-onkj.onrender.com  
+*(Free hosting on Render: the first visit after a while may take about 50 seconds to wake up. The demo resets to sample data on restart.)*
+
+
 **M.Tech DBMS course-outcome project.** A full-stack web application that tracks every job you apply for on LinkedIn (or anywhere else): company, role, date, location, recruiter, stage, viewed / not viewed, HR called / not called, rejected, and a timeline of every call and email.
 
 **Problem it solves:** you apply to dozens of roles a week. Two weeks later HR calls and you can't remember the company, the role, or when you applied. JobTrail's “HR just called?” search answers that in one line.
