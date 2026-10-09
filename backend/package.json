@@ -1,0 +1,23 @@
+{
+  "name": "jobtrail-backend",
+  "version": "2.0.0",
+  "description": "JobTrail REST API — Express + SQLite (node:sqlite)",
+  "type": "module",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev": "nodemon --ignore '../database/*.db*' src/server.js",
+    "start": "node src/server.js",
+    "db:reset": "node scripts/init-db.js",
+    "db:reset:empty": "node scripts/init-db.js --no-seed"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  }
+}

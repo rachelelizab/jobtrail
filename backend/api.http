@@ -1,0 +1,60 @@
+### JobTrail API — try these from VS Code with the "REST Client" extension
+### (click "Send Request" above each block). Backend must be running (npm run dev).
+
+@api = http://localhost:5050/api
+
+### Health check
+GET {{api}}/health
+
+### All applications (filters: phase=Waiting|Active|Won|Closed, q=text, sort=recent|oldest|company|priority)
+GET {{api}}/applications?phase=All&sort=recent
+
+### One application with history, calls and recruiters
+GET {{api}}/applications/1
+
+### "HR just called?" lookup (company, recruiter, email or phone digits)
+GET {{api}}/lookup?q=98450
+
+### Log a new application (one transaction: company → posting → application)
+POST {{api}}/applications
+Content-Type: application/json
+
+{
+  "company": "Zeta Robotics",
+  "title": "Data Scientist",
+  "location": "Bengaluru",
+  "work_mode": "Hybrid",
+  "applied_on": "2026-10-04",
+  "platform": "LinkedIn Easy Apply",
+  "job_url": "https://www.linkedin.com/jobs/view/4111111111",
+  "priority": 4,
+  "k_name": "Ravi Kumar",
+  "k_phone": "+91 90000 11111"
+}
+
+### A CHECK constraint rejects this (work_mode)
+POST {{api}}/applications
+Content-Type: application/json
+
+{ "company": "X", "title": "Y", "applied_on": "2026-10-04", "work_mode": "Moon base" }
+
+### Log an inbound HR call (trigger moves the application to SCREEN)
+POST {{api}}/applications/7/interactions
+Content-Type: application/json
+
+{ "channel": "Phone call", "direction": "Inbound", "occurred_at": "2026-10-04T11:30", "summary": "HR asked for notice period" }
+
+### Change stage (trigger writes status_history)
+PATCH {{api}}/applications/7/stage
+Content-Type: application/json
+
+{ "stage": "INTERVIEW" }
+
+### Dashboard (reads the views)
+GET {{api}}/dashboard
+
+### Read-only SQL console
+POST {{api}}/sql
+Content-Type: application/json
+
+{ "sql": "SELECT * FROM v_pipeline" }
