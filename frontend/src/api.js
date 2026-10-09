@@ -34,4 +34,10 @@ export const api = {
   dashboard: () => request('GET', '/dashboard'),
   schema: () => request('GET', '/schema'),
   sql: sql => request('POST', '/sql', { sql }),
+  authStatus: () => request('GET', '/auth/status'),
+  logout: () => request('POST', '/auth/logout'),
+  gmailSync: () => request('POST', '/gmail/sync'),
+  gmailReview: () => request('GET', '/gmail/review'),
+  gmailReviewAdd: (id, body) => request('POST', `/gmail/review/${encodeURIComponent(id)}/add`, body),
+  gmailReviewDismiss: id => request('POST', `/gmail/review/${encodeURIComponent(id)}/dismiss`),
 };

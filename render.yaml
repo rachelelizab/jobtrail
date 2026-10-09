@@ -9,3 +9,12 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
+      - key: TZ
+        value: Asia/Kolkata
+      # Gmail import — fill these in on the Render dashboard (Environment tab)
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: ALLOWED_EMAILS
+        sync: false

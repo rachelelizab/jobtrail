@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from './api.js';
 import Lookup from './components/Lookup.jsx';
+import GmailPanel from './components/GmailPanel.jsx';
 import Tracker from './components/Tracker.jsx';
 import Pipeline from './components/Pipeline.jsx';
 import DatabaseView from './components/DatabaseView.jsx';
@@ -54,6 +55,8 @@ export default function App() {
         </div>
       </header>
       {status.state === 'error' && <div className="err-banner">{status.text}</div>}
+
+      <GmailPanel version={version} onChanged={refresh} />
 
       <Lookup version={version} onOpen={openApp} />
 

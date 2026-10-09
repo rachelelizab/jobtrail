@@ -1,3 +1,4 @@
+import './env.js';
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -6,12 +7,15 @@ import cors from 'cors';
 import { createdNow, DB_FILE, q1 } from './db.js';
 import applications from './routes/applications.js';
 import misc from './routes/misc.js';
+import gmail, { startAutoSync } from './routes/gmail.js';
 
 const app = express();
+app.set('trust proxy', 1);
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
 app.use('/api', misc);
+app.use('/api', gmail);
 app.use('/api', applications);
 app.use('/api', (_req, res) => res.status(404).json({ error: 'No such API route.' }));
 
@@ -39,6 +43,7 @@ app.use((err, _req, res, _next) => {
 });
 
 const port = Number(process.env.PORT || 5050);
+startAutoSync();
 app.listen(port, () => {
   const { n } = q1('SELECT COUNT(*) AS n FROM application');
   console.log(`JobTrail API on http://localhost:${port}/api`);

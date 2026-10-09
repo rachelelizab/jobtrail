@@ -136,6 +136,32 @@ Try them from `backend/api.http` with the REST Client extension.
 | `EADDRINUSE :::5050` | Something else uses port 5050. Run `PORT=5060 npm run dev --prefix backend` and change the proxy in `frontend/vite.config.js` to 5060. |
 | Data looks wrong / want a clean demo | `npm run db:reset` |
 
+---
+
+## Import applications automatically from Gmail
+
+Click **Sign in with Google** at the top of the app. JobTrail gets **read-only** access to your Gmail, finds the emails that LinkedIn, Naukri, Internshala and Indeed send when you apply, and adds every application by itself — company, role, date, platform, location and job link. Later emails update the stage: *viewed* → Viewed by employer, *shortlisted / interview* → Technical interview, *unfortunately / regret* → Rejected. It syncs when you open the app (if more than an hour has passed), when you press **Sync now**, and every 3 hours on the server. Emails it cannot read clearly appear under **Check N emails**, where you type the company and role once.
+
+No LinkedIn / Naukri passwords are ever asked for or stored. Each email is read only once (`email_import` table), and the same company + role is never added twice.
+
+### One-time setup (Google Cloud, free)
+
+1. Go to https://console.cloud.google.com → create a project (e.g. *JobTrail*).
+2. **APIs & Services → Library →** enable **Gmail API**.
+3. **APIs & Services → OAuth consent screen →** User type **External** → fill app name and your email → add scope `.../auth/gmail.readonly` → under **Test users** add your Gmail address.
+4. **APIs & Services → Credentials → Create credentials → OAuth client ID →** type **Web application**. Add these **Authorised redirect URIs**:
+   - `http://localhost:5173/api/auth/google/callback` (your Mac, `npm run dev`)
+   - `https://jobtrail-onkj.onrender.com/api/auth/google/callback` (the live site)
+5. Copy the **Client ID** and **Client secret**.
+6. **On your Mac:** copy `backend/.env.example` to `backend/.env` and paste the two values (and your email in `ALLOWED_EMAILS`). Restart `npm run dev`.
+7. **On Render:** service → **Environment** → add `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `ALLOWED_EMAILS` → Save (it redeploys).
+
+While the Google app is in *Testing* mode, only the test users you added can sign in, and Google shows an "unverified app" screen — click **Continue**. That is normal for a personal project.
+
+### Database objects added
+
+`database/gmail.sql` (runs automatically on start): `app_user`, `user_session`, `email_import` (CHECK constraints on `kind` and `status`), plus a `source` column on `application` (`Manual` / `Gmail`).
+
 ## Build for production
 
 ```bash

@@ -13,6 +13,7 @@ export const DB_DIR = path.resolve(here, '../../database');
 export const DB_FILE = process.env.DB_FILE || path.join(DB_DIR, 'jobtrail.db');
 export const SCHEMA_FILE = path.join(DB_DIR, 'schema.sql');
 export const SEED_FILE = path.join(DB_DIR, 'seed.sql');
+export const GMAIL_FILE = path.join(DB_DIR, 'gmail.sql');
 
 /** Create the database file from schema.sql (+ seed.sql). Deletes any existing file. */
 export function createDatabase({ seed = true } = {}) {
@@ -29,6 +30,12 @@ if (isNew) createDatabase({ seed: true });
 
 export const db = new DatabaseSync(DB_FILE);
 db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
+
+// Gmail-import tables + application.source column (safe to run on every start).
+if (!db.prepare("SELECT 1 FROM pragma_table_info('application') WHERE name = 'source'").get()) {
+  db.exec("ALTER TABLE application ADD COLUMN source TEXT NOT NULL DEFAULT 'Manual' CHECK (source IN ('Manual','Gmail'))");
+}
+db.exec(fs.readFileSync(GMAIL_FILE, 'utf8'));
 export const createdNow = isNew;
 
 /** Read-only connection for the SQL console — any write attempt fails at the engine level. */

@@ -54,7 +54,7 @@ export default function Tracker({ version, onOpen, onAdd }) {
         ) : (
           <>
             <div className="lrow lhead">
-              <span>Tracking</span><span>Company · role</span><span>Location</span><span>Applied</span>
+              <span>Tracking</span><span>Company · role</span><span>HR contact</span><span>Applied</span>
               <span>Stage</span><span>Viewed</span><span>HR call</span>
             </div>
             {data.rows.length === 0 && <div className="empty"><p className="muted">No applications match this filter.</p></div>}
@@ -62,9 +62,10 @@ export default function Tracker({ version, onOpen, onAdd }) {
               <div key={r.app_id} className="lrow item" tabIndex={0} role="button" aria-label={`${r.company}, ${r.role}`}
                 onClick={() => onOpen(r.app_id)} onKeyDown={e => e.key === 'Enter' && onOpen(r.app_id)}>
                 <span className="trk">{trk(r.app_id)}</span>
-                <span className="co"><span className="name">{r.company}</span><span className="role">{r.role}</span></span>
-                <span className="loc">{r.location || '—'}{r.work_mode ? ` · ${r.work_mode}` : ''}</span>
-                <span className="date num">{fmtDate(r.applied_on)}<small>{ago(r.applied_on)}</small></span>
+                <span className="co"><span className="name">{r.company}</span>
+                  <span className="role">{r.role}{r.location ? ` · ${r.location}` : ''}{r.work_mode && r.work_mode !== r.location ? ` · ${r.work_mode}` : ''}</span></span>
+                <span className="loc hr">{r.hr_name ? <><b>{r.hr_name}</b>{r.hr_phone && <small className="mono">{r.hr_phone}</small>}</> : <small className="muted">—</small>}</span>
+                <span className="date num">{fmtDate(r.applied_on)}<small>{ago(r.applied_on)}{r.site ? ` · ${r.site}` : ''}</small></span>
                 <span className="st"><span className={`pill p-${phaseCls(r.stage_code, r.phase)}`}>{r.stage}</span></span>
                 <span className="flags">
                   <span className={`flag ${r.viewed ? 'yes' : ''}`}>{r.viewed ? 'Viewed' : 'Not yet'}</span>

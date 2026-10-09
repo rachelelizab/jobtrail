@@ -39,14 +39,35 @@ function findOrCreateCompany(b) {
     [clean(b.company), clean(b.website), clean(b.address), clean(b.city)]).lastInsertRowid;
 }
 
+/** Company (find or create) → posting → application [→ recruiter], in one transaction. Returns app_id. */
+export function createApplication(b, source = 'Manual') {
+  return tx(() => {
+    const companyId = findOrCreateCompany(b);
+    const jobId = run(
+      `INSERT INTO job_posting (company_id, title, location, work_mode, employment_type, job_url, external_job_id, salary_text, description)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+      [companyId, clean(b.title), clean(b.location), clean(b.work_mode), clean(b.employment_type),
+       clean(b.job_url), linkedinId(b.job_url), clean(b.salary_text), clean(b.description)]).lastInsertRowid;
+    const id = run(
+      `INSERT INTO application (job_id, applied_on, platform, resume_version, priority, review, source) VALUES (?,?,?,?,?,?,?)`,
+      [jobId, b.applied_on, clean(b.platform) || 'LinkedIn Easy Apply', clean(b.resume_version),
+       b.priority ? Number(b.priority) : null, clean(b.review), source]).lastInsertRowid;
+    if (clean(b.k_name)) {
+      run('INSERT INTO contact (company_id, full_name, role_title, email, phone) VALUES (?,?,?,?,?)',
+        [companyId, clean(b.k_name), clean(b.k_role), clean(b.k_email), clean(b.k_phone)]);
+    }
+    return id;
+  });
+}
+
 // ---------- list ----------
 r.get('/applications', (req, res) => {
   const { phase, q: search, sort } = req.query;
   const where = [], params = [];
   if (phase && phase !== 'All') { where.push('phase = ?'); params.push(phase); }
   if (search) {
-    where.push('(company LIKE ? OR role LIKE ? OR location LIKE ? OR stage LIKE ? OR platform LIKE ?)');
-    const like = `%${search}%`; params.push(like, like, like, like, like);
+    where.push('(company LIKE ? OR role LIKE ? OR location LIKE ? OR stage LIKE ? OR platform LIKE ? OR hr_name LIKE ? OR hr_phone LIKE ?)');
+    const like = `%${search}%`; params.push(like, like, like, like, like, like, like);
   }
   const order = {
     oldest: 'applied_on ASC, app_id ASC',
@@ -91,23 +112,7 @@ r.post('/applications', (req, res) => {
   if (clean(b.k_email) && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(b.k_email))
     return res.status(400).json({ error: 'The recruiter email does not look complete (name@company.com).' });
 
-  const appId = tx(() => {
-    const companyId = findOrCreateCompany(b);
-    const jobId = run(
-      `INSERT INTO job_posting (company_id, title, location, work_mode, employment_type, job_url, external_job_id, salary_text, description)
-       VALUES (?,?,?,?,?,?,?,?,?)`,
-      [companyId, clean(b.title), clean(b.location), clean(b.work_mode), clean(b.employment_type),
-       clean(b.job_url), linkedinId(b.job_url), clean(b.salary_text), clean(b.description)]).lastInsertRowid;
-    const id = run(
-      `INSERT INTO application (job_id, applied_on, platform, resume_version, priority, review) VALUES (?,?,?,?,?,?)`,
-      [jobId, b.applied_on, clean(b.platform) || 'LinkedIn Easy Apply', clean(b.resume_version),
-       b.priority ? Number(b.priority) : null, clean(b.review)]).lastInsertRowid;
-    if (clean(b.k_name)) {
-      run('INSERT INTO contact (company_id, full_name, role_title, email, phone) VALUES (?,?,?,?,?)',
-        [companyId, clean(b.k_name), clean(b.k_role), clean(b.k_email), clean(b.k_phone)]);
-    }
-    return id;
-  });
+  const appId = createApplication(b);
   res.status(201).json({ app_id: appId });
 });
 
