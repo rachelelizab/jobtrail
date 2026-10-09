@@ -4,10 +4,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import cors from 'cors';
-import { createdNow, DB_FILE, q1 } from './db.js';
+import { createdNow, DB_FILE, q1, restoredFrom } from './db.js';
 import applications from './routes/applications.js';
 import misc from './routes/misc.js';
 import gmail, { startAutoSync } from './routes/gmail.js';
+import events from './routes/events.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -16,6 +17,7 @@ app.use(express.json({ limit: '1mb' }));
 
 app.use('/api', misc);
 app.use('/api', gmail);
+app.use('/api', events);
 app.use('/api', applications);
 app.use('/api', (_req, res) => res.status(404).json({ error: 'No such API route.' }));
 
@@ -47,5 +49,6 @@ startAutoSync();
 app.listen(port, () => {
   const { n } = q1('SELECT COUNT(*) AS n FROM application');
   console.log(`JobTrail API on http://localhost:${port}/api`);
+  if (restoredFrom !== 'off') console.log(`Turso copy: ${{ restored: 'loaded the saved database', empty: 'no saved copy yet — saving this one', failed: 'COULD NOT LOAD — saving is off for this run' }[restoredFrom]}`);
   console.log(`SQLite database: ${DB_FILE}${createdNow ? ' (just created with sample data)' : ''} — ${n} applications`);
 });

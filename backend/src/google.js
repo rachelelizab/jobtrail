@@ -64,21 +64,29 @@ const stripHtml = h => h
   .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&#39;|&rsquo;/g, "'").replace(/&quot;/g, '"').replace(/&middot;/g, '·')
   .replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n');
 
-/** One message → { id, from, subject, date (ISO), snippet, text } */
+/** One message → { id, from, subject, date (ISO), snippet, text, ics } — ics = calendar invite text, if any */
 export async function getMessage(token, id) {
   const m = await call(`${GMAIL}/messages/${id}?format=full`, auth(token));
   const h = Object.fromEntries((m.payload?.headers || []).map(x => [x.name.toLowerCase(), x.value]));
-  let plain = '', html = '';
+  let plain = '', html = '', ics = '', icsAttachment = null;
+  const isIcs = part => /^(text\/calendar|application\/ics)$/i.test(part.mimeType || '') || /\.ics$/i.test(part.filename || '');
   const walk = part => {
     if (!part) return;
-    if (part.mimeType === 'text/plain' && part.body?.data) plain += b64(part.body.data) + '\n';
+    if (isIcs(part)) {
+      if (part.body?.data) ics ||= b64(part.body.data);
+      else if (part.body?.attachmentId) icsAttachment ||= part.body.attachmentId;
+    } else if (part.mimeType === 'text/plain' && part.body?.data) plain += b64(part.body.data) + '\n';
     else if (part.mimeType === 'text/html' && part.body?.data) html += b64(part.body.data) + '\n';
     (part.parts || []).forEach(walk);
   };
   walk(m.payload);
+  if (!ics && icsAttachment) {   // invite sent as an attachment: one more (read-only) request
+    try { ics = b64((await call(`${GMAIL}/messages/${id}/attachments/${icsAttachment}`, auth(token))).data); } catch { /* invite unreadable: carry on */ }
+  }
   return {
     id: m.id, from: h.from || '', subject: h.subject || '', snippet: m.snippet || '',
     date: new Date(Number(m.internalDate) || Date.parse(h.date) || Date.now()).toISOString(),
     text: (plain || stripHtml(html)).slice(0, 20000),
+    ics: ics.slice(0, 20000),
   };
 }

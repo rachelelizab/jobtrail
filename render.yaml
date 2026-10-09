@@ -16,5 +16,12 @@ services:
         sync: false
       - key: GOOGLE_CLIENT_SECRET
         sync: false
-      - key: ALLOWED_EMAILS
+      - key: ALLOWED_EMAILS          # optional: leave empty to allow every Google test user
+        sync: false
+      - key: ADMIN_EMAILS            # who may use the SQL console (sees everyone's data)
+        sync: false
+      # Keeps your data across restarts (free Turso database) — see README "Keep data on Render"
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
         sync: false

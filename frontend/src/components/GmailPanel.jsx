@@ -12,6 +12,7 @@ function summaryText(s) {
   const parts = [];
   if (s.imported) parts.push(`${s.imported} new application${s.imported > 1 ? 's' : ''} added`);
   if (s.updated) parts.push(`${s.updated} updated`);
+  if (s.events) parts.push(`${s.events} test${s.events > 1 ? 's' : ''} / interview${s.events > 1 ? 's' : ''} found`);
   if (s.review) parts.push(`${s.review} to check`);
   return parts.length ? parts.join(' · ') : 'No new job emails since the last check.';
 }
@@ -52,7 +53,7 @@ export default function GmailPanel({ version, onChanged }) {
       if (!s.user) return;
       loadReview();
       const last = s.user.last_sync_at ? Date.parse(s.user.last_sync_at.replace(' ', 'T')) : 0;
-      if (g === 'connected' || Date.now() - last > 60 * 60 * 1000) sync();
+      if (g === 'connected' || Date.now() - last > 15 * 60 * 1000) sync();
     }).catch(() => setSt({ configured: false }));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -71,8 +72,8 @@ export default function GmailPanel({ version, onChanged }) {
     return (
       <section className="gmail">
         <div>
-          <b>Import your applications automatically</b>
-          <span>Sign in with Google and JobTrail will read your LinkedIn, Naukri, Internshala and Indeed job emails (read-only) and add every application for you.</span>
+          <b>You are looking at sample data</b>
+          <span>Sign in with Google and JobTrail fills itself in: it reads your LinkedIn, Naukri, Internshala and other job-site emails, HR emails, test links and calendar invites (read-only), and records each application, round, date, time and HR contact. Each person only ever sees their own list.</span>
           {msg && <span className="gmsg">{msg}</span>}
         </div>
         <a className="btn primary" href="/api/auth/google">Sign in with Google</a>
@@ -80,7 +81,7 @@ export default function GmailPanel({ version, onChanged }) {
     );
   }
 
-  const logout = async () => { await api.logout(); setMsg(''); setReview([]); load(); };
+  const logout = async () => { await api.logout(); setMsg(''); setReview([]); load(); onChanged(); };
 
   return (
     <section className="gmail">
@@ -95,6 +96,7 @@ export default function GmailPanel({ version, onChanged }) {
         <button className="btn sm primary" onClick={sync} disabled={busy}>{busy ? 'Syncing…' : 'Sync now'}</button>
         <button className="btn sm ghost" onClick={logout}>Sign out</button>
       </div>
+      <p className="ghint">Reads job-site emails, HR emails about your applications, calendar invites, and <b>everything you put in a Gmail label called “Jobs”</b>. Tip: in LinkedIn, turn on Settings → Notifications → Job applications so every Easy Apply sends an email.</p>
       {showReview && review.length > 0 && (
         <div className="greview">
           <p className="muted">These job emails could not be read clearly. Fill in the company and role, then add them (or ignore them).</p>

@@ -140,7 +140,27 @@ Try them from `backend/api.http` with the REST Client extension.
 
 ## Import applications automatically from Gmail
 
-Click **Sign in with Google** at the top of the app. JobTrail gets **read-only** access to your Gmail, finds the emails that LinkedIn, Naukri, Internshala and Indeed send when you apply, and adds every application by itself — company, role, date, platform, location and job link. Later emails update the stage: *viewed* → Viewed by employer, *shortlisted / interview* → Technical interview, *unfortunately / regret* → Rejected. It syncs when you open the app (if more than an hour has passed), when you press **Sync now**, and every 3 hours on the server. Emails it cannot read clearly appear under **Check N emails**, where you type the company and role once.
+Click **Sign in with Google** at the top of the app. From then on JobTrail fills itself in from your Gmail (**read-only**, rule-based, free — no AI service). You never type an application:
+
+| Email it reads | What it records |
+|---|---|
+| "Application sent" from LinkedIn, Naukri, Internshala, Indeed and 12 more sites | a new application: company, role, date, site, location, job link |
+| "Viewed your application" | stage → Viewed by employer |
+| Test invite (HackerRank, HackerEarth, Mettl, "online assessment", "aptitude test") | a **Test** row: round name, deadline ("complete by 12 Oct, 11:59 PM"), test link; stage → Assessment |
+| Interview invite / calendar invite (.ics from Google Calendar, Outlook) | an **Interview** or **HR round** row: round ("Round 2 – Technical"), date and time, Meet / Zoom / Teams link or venue; stage → Interview / Final round |
+| "Thank you for applying" from a company's hiring system (Workday, Greenhouse, Lever, Darwinbox, Keka, Zoho Recruit, SuccessFactors and 20 more) | a new application with the company and role from the email (applied on the company's own site); later emails from the same system update it |
+| Any email from the company's HR | the HR's name, title, email and phone (from the sender or the signature: "Regards, Priya Raman, Talent Acquisition, +91 …") |
+| Offer ("pleased to offer", "offer letter") | stage → Offer received; earlier rounds marked Passed |
+| Rejection ("unfortunately", "regret", "not moving forward") | stage → Rejected; open rounds marked Not selected |
+
+Upcoming tests and interviews show under **Coming up** at the top. The stage history is dated by each email.
+
+**Tip — a "Jobs" label:** in Gmail, create a label called **Jobs** and put job emails in it (or make a filter that does). JobTrail reads everything in that label from any sender, and creates the application even if the only email is from the company's HR. Change the label name with `GMAIL_JOBS_LABEL`.
+**Tip — LinkedIn:** Settings → Notifications → Job applications → on, so every Easy Apply sends an email.
+
+It syncs when you open the app (if 15 minutes have passed), when you press **Sync now**, and every hour while the server is awake. Job-site emails it cannot read clearly appear under **Check N emails**.
+
+Tests: `cd backend && npm test` runs 15 tests — the email readers on realistic sample emails, and a full sync against a simulated Gmail.
 
 No LinkedIn / Naukri passwords are ever asked for or stored. Each email is read only once (`email_import` table), and the same company + role is never added twice.
 
@@ -158,9 +178,33 @@ No LinkedIn / Naukri passwords are ever asked for or stored. Each email is read 
 
 While the Google app is in *Testing* mode, only the test users you added can sign in, and Google shows an "unverified app" screen — click **Continue**. That is normal for a personal project.
 
+### Many people, each with their own list
+
+Anyone you add as a **test user** in Google Cloud (Audience → Test users, up to 100) can sign in. Every application and recruiter has an owner (`user_id` → `app_user`), and every query filters by the person who is signed in, so each person sees **only their own** applications, HR contacts, dashboard and export. Visitors who are not signed in see the sample (demo) data. The SQL console can read every row, so on the live site only the accounts in `ADMIN_EMAILS` may use it.
+
 ### Database objects added
 
-`database/gmail.sql` (runs automatically on start): `app_user`, `user_session`, `email_import` (CHECK constraints on `kind` and `status`), plus a `source` column on `application` (`Manual` / `Gmail`).
+`database/gmail.sql` (runs automatically on start): `app_user`, `user_session`, `email_import` (CHECK constraints on `kind` and `status`), plus a `source` column on `application` (`Manual` / `Gmail`) and an owner column `user_id` on `application` and `contact` (NULL = demo data). Added for automatic rounds: `interview_event` (test / interview / HR round with date, deadline, link, venue, HR, outcome; CHECK constraints on type, mode and outcome), view `v_upcoming_events`, and triggers `trg_event_advances_stage`, `trg_close_rounds_on_rejection`, `trg_rounds_passed_on_offer`; `app_clock` dates the stage history by the email.
+
+## Keep data on Render (free Turso database)
+
+Render's free plan wipes the disk on every restart, deploy and wake-up. With these two settings JobTrail keeps a copy of its SQLite database in a free [Turso](https://turso.tech) database: it loads the copy on start, saves a fresh one a few seconds after every change, and once more when Render stops the app. If the copy cannot be loaded, the app runs but saves nothing, so a good copy is never overwritten. The header shows **saved to Turso** when it is working.
+
+1. Sign up at turso.tech (Sign in with GitHub) and create a database called `jobtrail`, in the region nearest your Render service.
+2. On the database page copy its **URL** (`libsql://jobtrail-<you>.turso.io`) and create a **token**.
+3. Render → your service → **Environment** → add `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` → Save, rebuild and deploy.
+
+Tests: `npm test` in `backend/` includes three restart tests (a change survives a wiped disk; a change right before shutdown is saved; an unreachable Turso never overwrites the saved copy).
+
+## Letting friends use it
+
+Each signed-in person sees only their own applications. Because reading Gmail is a Google "restricted" permission, the Google app stays in **Testing**:
+
+1. Google Cloud → **Audience → Test users → + Add users** → their Gmail (up to 100 people).
+2. Render → **Environment → ALLOWED_EMAILS**: leave it **empty** (every test user may sign in) or list everyone, comma-separated.
+3. Send them the link. They click **Advanced → Go to JobTrail** on Google's "unverified app" screen once.
+
+Google ends a test user's Gmail access after 7 days; they press **Sign in with Google** again to continue. Opening the app to anyone without adding them needs Google's app verification and a paid yearly security review.
 
 ## Build for production
 

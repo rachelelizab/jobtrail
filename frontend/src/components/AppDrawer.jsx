@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../api.js';
-import { ago, fmtDate, nowLocalInput, trk } from '../utils.js';
+import { ago, eventWhen, fmtDate, nowLocalInput, trk } from '../utils.js';
 import { CHANNELS, DetailFields, Field, formData } from './Fields.jsx';
 
 export default function AppDrawer({ id, focusCall, version, onClose, onChanged, onDeleted }) {
@@ -39,6 +39,7 @@ export default function AppDrawer({ id, focusCall, version, onClose, onChanged, 
   const events = [
     ...a.history.map(h => ({ t: h.changed_at, kind: 'stage', h })),
     ...a.interactions.map(i => ({ t: i.occurred_at, kind: 'call', i })),
+    ...(a.events || []).filter(ev => ev.scheduled_at || ev.due_by).map(ev => ({ t: ev.scheduled_at || ev.due_by, kind: 'round', ev })),
   ].sort((x, y) => String(y.t).localeCompare(String(x.t)));
 
   async function addCall(e) {
@@ -100,6 +101,26 @@ export default function AppDrawer({ id, focusCall, version, onClose, onChanged, 
           </div>
 
           <div className="sec">
+            <h3>Tests &amp; interviews{a.events?.length ? ` · ${a.events.length}` : ''}</h3>
+            {!a.events?.length && <p className="muted" style={{ margin: 0 }}>None yet. Test and interview invites in your Gmail appear here on their own.</p>}
+            <div className="rounds">
+              {(a.events || []).map(ev => (
+                <div className="round" key={ev.event_id}>
+                  <div>
+                    <b>{ev.round_name}</b> <span className="muted">· {ev.event_type}{ev.source === 'Gmail' ? ' · from email' : ''}</span><br />
+                    {eventWhen(ev)}{ev.mode ? ` · ${ev.mode}` : ''}{ev.location ? ` · ${ev.location}` : ''}
+                    {ev.hr_name && <><br /><span className="muted">HR: {ev.hr_name}{ev.hr_phone ? ` · ${ev.hr_phone}` : ''}</span></>}
+                    {ev.meeting_link && <><br /><a href={ev.meeting_link} target="_blank" rel="noreferrer">{ev.meeting_link.replace(/^https?:\/\//, '').slice(0, 48)}</a></>}
+                  </div>
+                  <select aria-label="Outcome" value={ev.outcome} onChange={e => act(() => api.setEventOutcome(ev.event_id, e.target.value), `Marked ${e.target.value}`)}>
+                    {['Scheduled', 'Done', 'Passed', 'Not selected', 'Cancelled'].map(o => <option key={o}>{o}</option>)}
+                  </select>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="sec">
             <h3>Log a call, email or message</h3>
             <form className="form" onSubmit={addCall}>
               <Field name="channel" label="Type" value="Phone call" options={CHANNELS} />
@@ -131,7 +152,12 @@ export default function AppDrawer({ id, focusCall, version, onClose, onChanged, 
           <div className="sec">
             <h3>Timeline</h3>
             <div className="timeline">
-              {events.map((e, n) => e.kind === 'stage' ? (
+              {events.map((e, n) => e.kind === 'round' ? (
+                <div className="tl round-ev" key={'r' + e.ev.event_id}>
+                  <div className="when">{eventWhen(e.ev)}</div>
+                  <b>{e.ev.round_name}</b> · {e.ev.event_type}{e.ev.mode ? ` · ${e.ev.mode}` : ''}
+                </div>
+              ) : e.kind === 'stage' ? (
                 <div className="tl" key={'h' + e.h.history_id}>
                   <div className="when">{String(e.t).slice(0, 16)}</div>
                   {e.h.from_stage ? <>{e.h.from_label} → <b>{e.h.to_label}</b></> : <b>Applied</b>}

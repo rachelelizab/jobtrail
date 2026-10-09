@@ -10,6 +10,11 @@ const ER = `erDiagram
   STAGE ||--o{ STATUS_HISTORY : "to stage"
   APPLICATION ||--o{ INTERACTION : has
   CONTACT |o--o{ INTERACTION : "made by"
+  APP_USER ||--o{ APPLICATION : owns
+  APP_USER ||--o{ EMAIL_IMPORT : "Gmail read"
+  APPLICATION ||--o{ INTERVIEW_EVENT : "rounds"
+  CONTACT |o--o{ INTERVIEW_EVENT : "HR for"
+  EMAIL_IMPORT }o--o| INTERVIEW_EVENT : "found"
   COMPANY {
     int company_id PK
     text name UK
@@ -71,6 +76,33 @@ const ER = `erDiagram
     text direction
     datetime occurred_at
     text summary
+  }
+  APP_USER {
+    int user_id PK
+    text google_sub UK
+    text email
+    text name
+  }
+  EMAIL_IMPORT {
+    text message_id PK
+    int user_id FK
+    text kind
+    text status
+    int app_id FK
+    int event_id FK
+  }
+  INTERVIEW_EVENT {
+    int event_id PK
+    int app_id FK
+    int user_id FK
+    text event_type
+    text round_name
+    datetime scheduled_at
+    datetime due_by
+    text mode
+    text meeting_link
+    int contact_id FK
+    text outcome
   }`;
 
 const PRESETS = [
@@ -154,10 +186,10 @@ export default function DatabaseView({ version }) {
         <div className="notes">
           <p><b>3NF / BCNF.</b> Company facts live once in <code>company</code>, so an address change updates one row. Recruiters are a separate relation because one company has many. Stage labels sit in the <code>stage</code> lookup table; <code>application</code> stores only the code.</p>
           <p><b>Integrity.</b> Foreign keys with <code>ON DELETE CASCADE</code> and <code>SET NULL</code>; <code>CHECK</code> constraints on work mode, platform, channel, direction, priority 1–5 and e-mail shape; <code>UNIQUE(job_id)</code> makes posting ↔ application 1:1.</p>
-          <p><b>Triggers.</b> New application → first history row. Stage change → history row + timestamp. Moving past “Applied” → marks it viewed. Inbound call while waiting → moves to “HR screen”. History is append-only (<code>RAISE(ABORT)</code>). Deleting a company's last posting removes the company.</p>
+          <p><b>Triggers.</b> New application → first history row. Stage change → history row + timestamp. Moving past “Applied” → marks it viewed. Inbound call while waiting → moves to “HR screen”. History is append-only (<code>RAISE(ABORT)</code>). Deleting a company's last posting removes the company. A test or interview read from email moves the application to Assessment / Interview / Final round; a rejection closes its open rounds; an offer marks earlier rounds passed.</p>
           <p><b>Transactions.</b> “Log an application” finds or creates the company, then the posting, then the application inside one <code>BEGIN … COMMIT</code>; any failure rolls all three back.</p>
           <p><b>Engine.</b> SQLite, built into Node.js — the whole database is the file <code>database/jobtrail.db</code>. A MySQL 8 version with stored procedures is in <code>database/mysql-reference/</code>.</p>
-          <p><b>Views.</b> <code>v_application_overview</code>, <code>v_pipeline</code>, <code>v_followups_due</code>, <code>v_monthly_activity</code>, <code>v_company_summary</code> — the Tracker and Pipeline tabs read from these.</p>
+          <p><b>Views.</b> <code>v_application_overview</code>, <code>v_pipeline</code>, <code>v_followups_due</code>, <code>v_monthly_activity</code>, <code>v_company_summary</code>, <code>v_upcoming_events</code> — the Tracker, Coming up and Pipeline sections read from these.</p>
         </div>
       </div>
 

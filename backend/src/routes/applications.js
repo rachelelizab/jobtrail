@@ -1,5 +1,7 @@
 import { Router } from 'express';
+import { eventsFor } from './events.js';
 import { q, q1, run, tx } from '../db.js';
+import { uid } from '../auth.js';
 
 const r = Router();
 
@@ -13,6 +15,8 @@ export const linkedinId = url => {
   return m ? m[1] : null;
 };
 const notFound = msg => Object.assign(new Error(msg), { status: 404 });
+/** true if this application belongs to the person making the request */
+const owns = (req, appId) => Boolean(q1('SELECT 1 FROM application WHERE app_id = ? AND user_id IS ?', [Number(appId), uid(req)]));
 
 /** Shared validation for create / update. Returns an error message or null. */
 function validate(b) {
@@ -40,7 +44,7 @@ function findOrCreateCompany(b) {
 }
 
 /** Company (find or create) → posting → application [→ recruiter], in one transaction. Returns app_id. */
-export function createApplication(b, source = 'Manual') {
+export function createApplication(b, source = 'Manual', userId = null) {
   return tx(() => {
     const companyId = findOrCreateCompany(b);
     const jobId = run(
@@ -49,12 +53,12 @@ export function createApplication(b, source = 'Manual') {
       [companyId, clean(b.title), clean(b.location), clean(b.work_mode), clean(b.employment_type),
        clean(b.job_url), linkedinId(b.job_url), clean(b.salary_text), clean(b.description)]).lastInsertRowid;
     const id = run(
-      `INSERT INTO application (job_id, applied_on, platform, resume_version, priority, review, source) VALUES (?,?,?,?,?,?,?)`,
+      `INSERT INTO application (job_id, applied_on, platform, resume_version, priority, review, source, user_id) VALUES (?,?,?,?,?,?,?,?)`,
       [jobId, b.applied_on, clean(b.platform) || 'LinkedIn Easy Apply', clean(b.resume_version),
-       b.priority ? Number(b.priority) : null, clean(b.review), source]).lastInsertRowid;
+       b.priority ? Number(b.priority) : null, clean(b.review), source, userId]).lastInsertRowid;
     if (clean(b.k_name)) {
-      run('INSERT INTO contact (company_id, full_name, role_title, email, phone) VALUES (?,?,?,?,?)',
-        [companyId, clean(b.k_name), clean(b.k_role), clean(b.k_email), clean(b.k_phone)]);
+      run('INSERT INTO contact (company_id, full_name, role_title, email, phone, user_id) VALUES (?,?,?,?,?,?)',
+        [companyId, clean(b.k_name), clean(b.k_role), clean(b.k_email), clean(b.k_phone), userId]);
     }
     return id;
   });
@@ -63,7 +67,7 @@ export function createApplication(b, source = 'Manual') {
 // ---------- list ----------
 r.get('/applications', (req, res) => {
   const { phase, q: search, sort } = req.query;
-  const where = [], params = [];
+  const where = ['user_id IS ?'], params = [uid(req)];
   if (phase && phase !== 'All') { where.push('phase = ?'); params.push(phase); }
   if (search) {
     where.push('(company LIKE ? OR role LIKE ? OR location LIKE ? OR stage LIKE ? OR platform LIKE ? OR hr_name LIKE ? OR hr_phone LIKE ?)');
@@ -74,8 +78,8 @@ r.get('/applications', (req, res) => {
     company: 'company COLLATE NOCASE ASC, applied_on DESC',
     priority: 'priority IS NULL, priority DESC, applied_on DESC',
   }[sort] || 'applied_on DESC, app_id DESC';
-  const rows = q(`SELECT * FROM v_application_overview ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY ${order}`, params);
-  const counts = q('SELECT phase, COUNT(*) AS n FROM v_application_overview GROUP BY phase');
+  const rows = q(`SELECT * FROM v_application_overview WHERE ${where.join(' AND ')} ORDER BY ${order}`, params);
+  const counts = q('SELECT phase, COUNT(*) AS n FROM v_application_overview WHERE user_id IS ? GROUP BY phase', [uid(req)]);
   res.json({ rows, counts: Object.fromEntries(counts.map(c => [c.phase, c.n])) });
 });
 
@@ -89,9 +93,9 @@ r.get('/applications/:id', (req, res) => {
        JOIN job_posting j ON j.job_id = a.job_id
        JOIN company c     ON c.company_id = j.company_id
        JOIN stage s       ON s.stage_code = a.current_stage
-      WHERE a.app_id = ?`, [id]);
+      WHERE a.app_id = ? AND a.user_id IS ?`, [id, uid(req)]);
   if (!app) return res.status(404).json({ error: 'Application not found.' });
-  const contacts = q('SELECT * FROM contact WHERE company_id = ? ORDER BY full_name', [app.company_id]);
+  const contacts = q('SELECT * FROM contact WHERE company_id = ? AND user_id IS ? ORDER BY full_name', [app.company_id, uid(req)]);
   const history = q(
     `SELECT h.*, sf.label AS from_label, st.label AS to_label
        FROM status_history h
@@ -101,7 +105,7 @@ r.get('/applications/:id', (req, res) => {
   const interactions = q(
     `SELECT i.*, k.full_name FROM interaction i LEFT JOIN contact k ON k.contact_id = i.contact_id
       WHERE i.app_id = ? ORDER BY i.occurred_at`, [id]);
-  res.json({ ...app, contacts, history, interactions });
+  res.json({ ...app, contacts, history, interactions, events: eventsFor(id, uid(req)) });
 });
 
 // ---------- create: company (find or create) → posting → application, in one transaction ----------
@@ -112,7 +116,7 @@ r.post('/applications', (req, res) => {
   if (clean(b.k_email) && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(b.k_email))
     return res.status(400).json({ error: 'The recruiter email does not look complete (name@company.com).' });
 
-  const appId = createApplication(b);
+  const appId = createApplication(b, 'Manual', uid(req));
   res.status(201).json({ app_id: appId });
 });
 
@@ -122,6 +126,7 @@ r.put('/applications/:id', (req, res) => {
   const b = req.body || {};
   const err = validate(b);
   if (err) return res.status(400).json({ error: err });
+  if (!owns(req, id)) return res.status(404).json({ error: 'Application not found.' });
 
   tx(() => {
     const cur = q1(
@@ -152,21 +157,21 @@ r.put('/applications/:id', (req, res) => {
 
 // ---------- stage / viewed ----------
 r.patch('/applications/:id/stage', (req, res) => {
-  const { changes } = run('UPDATE application SET current_stage = ? WHERE app_id = ?',
-    [String(req.body?.stage || ''), Number(req.params.id)]);
+  const { changes } = run('UPDATE application SET current_stage = ? WHERE app_id = ? AND user_id IS ?',
+    [String(req.body?.stage || ''), Number(req.params.id), uid(req)]);
   if (!changes) return res.status(404).json({ error: 'Application not found.' });
   res.json({ ok: true });
 });
 
 r.patch('/applications/:id/viewed', (req, res) => {
-  run('UPDATE application SET viewed_by_employer = ? WHERE app_id = ?', [req.body?.viewed ? 1 : 0, Number(req.params.id)]);
+  run('UPDATE application SET viewed_by_employer = ? WHERE app_id = ? AND user_id IS ?', [req.body?.viewed ? 1 : 0, Number(req.params.id), uid(req)]);
   res.json({ ok: true });
 });
 
 // ---------- delete: removing the posting cascades to application, history and calls;
 //            trigger trg_cleanup_company removes the company if it has no postings left ----------
 r.delete('/applications/:id', (req, res) => {
-  const row = q1('SELECT job_id FROM application WHERE app_id = ?', [Number(req.params.id)]);
+  const row = q1('SELECT job_id FROM application WHERE app_id = ? AND user_id IS ?', [Number(req.params.id), uid(req)]);
   if (!row) return res.status(404).json({ error: 'Application not found.' });
   run('DELETE FROM job_posting WHERE job_id = ?', [row.job_id]);
   res.json({ ok: true });
@@ -178,14 +183,16 @@ r.post('/applications/:id/interactions', (req, res) => {
   const b = req.body || {};
   const when = String(b.occurred_at || '').replace('T', ' ');
   if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(when)) return res.status(400).json({ error: 'Pick the date and time of the call.' });
+  if (!owns(req, id)) return res.status(404).json({ error: 'Application not found.' });
   tx(() => {
     let contactId = b.contact_id ? Number(b.contact_id) : null;
+    if (contactId && !q1('SELECT 1 FROM contact WHERE contact_id = ? AND user_id IS ?', [contactId, uid(req)])) contactId = null;
     if (!contactId && clean(b.new_contact?.full_name)) {
       const a = q1('SELECT j.company_id FROM application a JOIN job_posting j ON j.job_id = a.job_id WHERE a.app_id = ?', [id]);
       if (!a) throw notFound('Application not found.');
       const n = b.new_contact;
-      contactId = run('INSERT INTO contact (company_id, full_name, role_title, email, phone) VALUES (?,?,?,?,?)',
-        [a.company_id, clean(n.full_name), clean(n.role_title), clean(n.email), clean(n.phone)]).lastInsertRowid;
+      contactId = run('INSERT INTO contact (company_id, full_name, role_title, email, phone, user_id) VALUES (?,?,?,?,?,?)',
+        [a.company_id, clean(n.full_name), clean(n.role_title), clean(n.email), clean(n.phone), uid(req)]).lastInsertRowid;
     }
     run('INSERT INTO interaction (app_id, contact_id, channel, direction, occurred_at, summary) VALUES (?,?,?,?,?,?)',
       [id, contactId, b.channel, b.direction, when.length === 16 ? when + ':00' : when, clean(b.summary)]);
@@ -194,12 +201,13 @@ r.post('/applications/:id/interactions', (req, res) => {
 });
 
 r.delete('/interactions/:id', (req, res) => {
-  run('DELETE FROM interaction WHERE interaction_id = ?', [Number(req.params.id)]);
+  run(`DELETE FROM interaction WHERE interaction_id = ?
+         AND app_id IN (SELECT app_id FROM application WHERE user_id IS ?)`, [Number(req.params.id), uid(req)]);
   res.json({ ok: true });
 });
 
 r.delete('/contacts/:id', (req, res) => {
-  run('DELETE FROM contact WHERE contact_id = ?', [Number(req.params.id)]);
+  run('DELETE FROM contact WHERE contact_id = ? AND user_id IS ?', [Number(req.params.id), uid(req)]);
   res.json({ ok: true });
 });
 

@@ -11,9 +11,11 @@
     "dev": "nodemon --ignore '../database/*.db*' src/server.js",
     "start": "node src/server.js",
     "db:reset": "node scripts/init-db.js",
-    "db:reset:empty": "node scripts/init-db.js --no-seed"
+    "db:reset:empty": "node scripts/init-db.js --no-seed",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
+    "@libsql/client": "^0.18.0",
     "cors": "^2.8.5",
     "express": "^5.1.0"
   },

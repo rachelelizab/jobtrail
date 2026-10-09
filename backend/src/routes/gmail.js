@@ -2,16 +2,17 @@ import { Router } from 'express';
 import crypto from 'node:crypto';
 import { q, q1, run } from '../db.js';
 import { createApplication } from './applications.js';
-import { parseJobEmail, gmailQuery, recruiterQuery, matchCompany, recruiterFrom, kindOf } from '../emailParser.js';
+import { cookies, currentUser } from '../auth.js';
+import { parseJobEmail, parseDirectEmail, gmailQuery, recruiterQuery, labelQuery, matchCompany, recruiterFrom, kindOf, PLATFORMS } from '../emailParser.js';
+import { extractEvent, parseIcs } from '../scheduleParser.js';
 import { googleConfigured, authUrl, exchangeCode, refreshAccess, userInfo, listMessageIds, getMessage } from '../google.js';
 
 const r = Router();
 const TZ = process.env.APP_TIMEZONE || 'Asia/Kolkata';
 const FIRST_SYNC_DAYS = Number(process.env.GMAIL_FIRST_SYNC_DAYS || 365);
+const JOBS_LABEL = process.env.GMAIL_JOBS_LABEL || 'Jobs';   // your own Gmail label for job emails (any sender)
 
 // ---------- small helpers ----------
-const cookies = req => Object.fromEntries((req.headers.cookie || '').split(';').filter(Boolean)
-  .map(c => { const i = c.indexOf('='); return [c.slice(0, i).trim(), decodeURIComponent(c.slice(i + 1).trim())]; }));
 const isHttps = req => req.secure || req.headers['x-forwarded-proto'] === 'https';
 function setCookie(req, res, name, value, maxAgeSec) {
   res.append('Set-Cookie', `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}${isHttps(req) ? '; Secure' : ''}`);
@@ -21,12 +22,6 @@ const redirectUri = req => process.env.GOOGLE_REDIRECT_URI
 const localDate = iso => new Date(iso).toLocaleDateString('en-CA', { timeZone: TZ });                 // YYYY-MM-DD
 const localDateTime = iso => new Date(iso).toLocaleString('sv-SE', { timeZone: TZ }).slice(0, 19);   // YYYY-MM-DD HH:MM:SS
 
-export function currentUser(req) {
-  const sid = cookies(req).jt_sid;
-  if (!sid) return null;
-  return q1(`SELECT u.user_id, u.email, u.name, u.last_sync_at, u.refresh_token IS NOT NULL AS can_sync
-               FROM user_session s JOIN app_user u ON u.user_id = s.user_id WHERE s.session_id = ?`, [sid]) || null;
-}
 const needUser = (req, res) => {
   const u = currentUser(req);
   if (!u) res.status(401).json({ error: 'Sign in with Google first.' });
@@ -36,7 +31,7 @@ const needUser = (req, res) => {
 // ---------- sign in / out ----------
 r.get('/auth/status', (req, res) => {
   const user = currentUser(req);
-  const review = user ? q1("SELECT COUNT(*) AS n FROM email_import WHERE status = 'review'").n : 0;
+  const review = user ? q1("SELECT COUNT(*) AS n FROM email_import WHERE status = 'review' AND user_id = ?", [user.user_id]).n : 0;
   res.json({ configured: googleConfigured(), user, review });
 });
 
@@ -97,92 +92,174 @@ async function accessToken(userId) {
 }
 
 /** Find the application an update email is about: company + role, or the company's only application. */
-function findApplication(company, role) {
+function findApplication(userId, company, role) {
   const base = `SELECT a.app_id, a.current_stage, a.viewed_by_employer, s.sort_order, s.is_terminal
                   FROM application a JOIN job_posting j ON j.job_id = a.job_id
                   JOIN company c ON c.company_id = j.company_id JOIN stage s ON s.stage_code = a.current_stage
-                 WHERE c.name = ?`;
+                 WHERE a.user_id IS ? AND c.name = ?`;
   if (role) {
-    const hit = q1(`${base} AND j.title = ? COLLATE NOCASE ORDER BY a.applied_on DESC LIMIT 1`, [company, role]);
+    const hit = q1(`${base} AND j.title = ? COLLATE NOCASE ORDER BY a.applied_on DESC LIMIT 1`, [userId, company, role]);
     if (hit) return hit;
   }
-  const all = q(`${base} ORDER BY a.applied_on DESC`, [company]);
+  const all = q(`${base} ORDER BY a.applied_on DESC`, [userId, company]);
   return all.length === 1 ? all[0] : null;
 }
 
-const STAGE_ORDER = { INTERVIEW: 5 };
+// ---------- stages, recruiters and rounds ----------
+const STAGE = { APPLIED: 1, VIEWED: 2, SCREEN: 3, ASSESS: 4, INTERVIEW: 5, FINAL: 6, OFFER: 7 };
+const KIND_STAGE = { test: 'ASSESS', interview: 'INTERVIEW', offer: 'OFFER', rejected: 'REJECTED' };
 
-/** Apply one parsed email to the database. Returns { status, app_id }. */
-export function applyEmail(p, email) {
+/** Move an application forward to `target` (never backwards; Rejected / Accepted / Withdrawn stay as they are). */
+function advance(appId, target) {
+  const a = q1(`SELECT a.current_stage, s.sort_order, s.is_terminal FROM application a JOIN stage s ON s.stage_code = a.current_stage WHERE a.app_id = ?`, [appId]);
+  if (!a || a.is_terminal || a.current_stage === target) return false;
+  if (target !== 'REJECTED' && a.sort_order >= STAGE[target]) return false;
+  run('UPDATE application SET current_stage = ? WHERE app_id = ?', [target, appId]);
+  return true;
+}
+
+/** Save the HR / recruiter (new, or fill in a missing phone / title / email). Returns contact_id or null. */
+function saveRecruiter(companyId, userId, rec) {
+  if (!rec?.full_name) return null;
+  const known = q1(`SELECT contact_id, phone, email, role_title FROM contact
+                     WHERE company_id = ? AND user_id IS ? AND ((? IS NOT NULL AND lower(email) = ?) OR full_name = ? COLLATE NOCASE)`,
+    [companyId, userId, rec.email || null, rec.email || null, rec.full_name]);
+  if (known) {
+    run(`UPDATE contact SET phone = COALESCE(phone, ?), email = COALESCE(email, ?), role_title = COALESCE(role_title, ?) WHERE contact_id = ?`,
+      [rec.phone || null, rec.email || null, rec.role_title || null, known.contact_id]);
+    return known.contact_id;
+  }
+  return run('INSERT INTO contact (company_id, full_name, role_title, email, phone, user_id) VALUES (?,?,?,?,?,?)',
+    [companyId, rec.full_name, rec.role_title || 'Recruiter / HR', rec.email || null, rec.phone || null, userId]).lastInsertRowid;
+}
+
+/**
+ * Save a test / interview read from an email. The same round arriving again (a reminder or a new time)
+ * updates the existing row instead of adding a second one. Returns event_id or null.
+ */
+function saveEvent(appId, userId, email, ev, contactId) {
+  if (!ev) return null;
+  const msg = `${userId}:${email.id}`;
+  const seen = q1('SELECT event_id FROM interview_event WHERE source_message_id = ?', [msg]);
+  if (seen) return seen.event_id;
+  const same = q1(`SELECT event_id FROM interview_event WHERE app_id = ? AND outcome = 'Scheduled'
+                    AND (round_name = ? COLLATE NOCASE OR (? IS NOT NULL AND scheduled_at = ?))`,
+    [appId, ev.round_name, ev.scheduled_at, ev.scheduled_at]);
+  if (same) {
+    run(`UPDATE interview_event SET scheduled_at = COALESCE(?, scheduled_at), has_time = CASE WHEN ? IS NOT NULL THEN ? ELSE has_time END,
+           ends_at = COALESCE(?, ends_at), due_by = COALESCE(?, due_by), mode = COALESCE(?, mode),
+           meeting_link = COALESCE(?, meeting_link), location = COALESCE(?, location), contact_id = COALESCE(?, contact_id)
+         WHERE event_id = ?`,
+      [ev.scheduled_at, ev.scheduled_at, ev.has_time, ev.ends_at, ev.due_by, ev.mode, ev.meeting_link, ev.location, contactId, same.event_id]);
+    return same.event_id;
+  }
+  // the trigger trg_event_advances_stage moves the application to Assessment / Interview / Final round
+  return run(`INSERT INTO interview_event (app_id, user_id, event_type, round_name, scheduled_at, has_time, ends_at, due_by,
+                                           mode, meeting_link, location, contact_id, source, source_message_id)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'Gmail',?)`,
+    [appId, userId, ev.event_type, ev.round_name, ev.scheduled_at, ev.has_time, ev.ends_at, ev.due_by,
+     ev.mode, ev.meeting_link, ev.location, contactId, msg]).lastInsertRowid;
+}
+
+/** Calendar-invite text joined to the body, so HR phone numbers and the role in the invite are read too. */
+const withIcs = email => {
+  const ics = parseIcs(email.ics);
+  return ics ? { ...email, text: `${email.text}\n${ics.summary}\n${ics.description}` } : email;
+};
+
+/** Apply one parsed job-site email (LinkedIn, Naukri …) to the database. Returns { status, app_id, event_id }. */
+export function applyEmail(p, email, userId) {
   if (!p || p.kind === 'other') return { status: 'ignored', app_id: null };
 
+  // a company's own hiring system (Workday, Greenhouse …): the email is reliable even without a role
+  if (p.ats && p.company && !p.role) p = { ...p, role: 'Role not mentioned in email' };
   if (p.kind === 'applied') {
     if (!p.company || !p.role) return { status: 'review', app_id: null };
     const dup = q1(`SELECT a.app_id FROM application a JOIN job_posting j ON j.job_id = a.job_id
                       JOIN company c ON c.company_id = j.company_id
-                     WHERE c.name = ? AND j.title = ? COLLATE NOCASE`, [p.company, p.role]);
+                     WHERE a.user_id IS ? AND c.name = ? AND j.title = ? COLLATE NOCASE`, [userId, p.company, p.role]);
     if (dup) return { status: 'duplicate', app_id: dup.app_id };
     const app_id = createApplication({
       company: p.company, title: p.role, location: p.location || null, job_url: p.job_url || null,
       applied_on: localDate(email.date), platform: p.appPlatform, review: `Imported from ${p.platform} email`,
-    }, 'Gmail');
+    }, 'Gmail', userId);
     return { status: 'imported', app_id };
   }
 
   if (!p.company) return { status: 'review', app_id: null };
-  const a = findApplication(p.company, p.role);
+  let a = findApplication(userId, p.company, p.role);
+  let created = false;
+  if (!a && p.ats) {
+    // applied on the company's site with no earlier email: record the application, then this update
+    createApplication({ company: p.company, title: p.role, applied_on: localDate(email.date), platform: p.appPlatform,
+      job_url: p.job_url || null, review: `Created from a ${p.platform} email (applied on the company's site)` }, 'Gmail', userId);
+    a = findApplication(userId, p.company, p.role);
+    created = true;
+  }
   if (!a) return { status: 'review', app_id: null };
-  let changed = false;
+  let changed = false, event_id = null;
   if (p.kind === 'viewed') {
     if (a.current_stage === 'APPLIED') { run("UPDATE application SET current_stage = 'VIEWED' WHERE app_id = ?", [a.app_id]); changed = true; }
     if (!a.viewed_by_employer) { run('UPDATE application SET viewed_by_employer = 1 WHERE app_id = ?', [a.app_id]); changed = true; }
   } else {
-    const target = p.kind === 'rejected' ? 'REJECTED' : 'INTERVIEW';
-    const move = !a.is_terminal && (target === 'REJECTED' || a.sort_order < STAGE_ORDER.INTERVIEW);
-    if (move) { run('UPDATE application SET current_stage = ? WHERE app_id = ?', [target, a.app_id]); changed = true; }
+    const e = withIcs(email);
+    const companyId = q1('SELECT j.company_id FROM application a JOIN job_posting j ON j.job_id = a.job_id WHERE a.app_id = ?', [a.app_id]).company_id;
+    const contactId = saveRecruiter(companyId, userId, recruiterFrom(e));
+    event_id = saveEvent(a.app_id, userId, email, extractEvent(e), contactId);
+    if (KIND_STAGE[p.kind]) advance(a.app_id, KIND_STAGE[p.kind]);
     // keep the email in the call / email log (after the stage change, so the inbound trigger doesn't interfere)
-    run(`INSERT INTO interaction (app_id, channel, direction, occurred_at, summary) VALUES (?, 'Email', 'Inbound', ?, ?)`,
-      [a.app_id, localDateTime(email.date), `${p.platform} email: ${email.subject}`.slice(0, 300)]);
+    run(`INSERT INTO interaction (app_id, contact_id, channel, direction, occurred_at, summary) VALUES (?, ?, 'Email', 'Inbound', ?, ?)`,
+      [a.app_id, contactId, localDateTime(email.date), `${p.platform} email: ${email.subject}`.slice(0, 300)]);
     changed = true;
   }
-  return { status: changed ? 'updated' : 'duplicate', app_id: a.app_id };
+  return { status: created ? 'imported' : changed ? 'updated' : 'duplicate', app_id: a.app_id, event_id };
 }
 
+/**
+ * An email straight from a company / recruiter (or anything in your Jobs label):
+ * save the HR, the test / interview and its date, log the email, move the stage.
+ * With `create` (Jobs label), a company you have no application for yet gets one.
+ */
+export function applyRecruiterEmail(email, userId, { create = false } = {}) {
+  const e = withIcs(email);
+  const companies = q(`SELECT DISTINCT c.company_id, c.name FROM company c
+                         JOIN job_posting j ON j.company_id = c.company_id JOIN application a ON a.job_id = j.job_id
+                        WHERE a.user_id IS ?`, [userId]);
+  let c = matchCompany(e, companies);
+  const kind = kindOf(`${e.subject}\n${e.text}`);
+  let created = false;
+  if (!c && create) {
+    const d = parseDirectEmail(e);
+    if (!d.company || kind === 'other' && !e.ics) return { status: 'ignored', app_id: null, company: d.company || null, kind };
+    createApplication({ company: d.company, title: d.role || 'Role not mentioned in email', applied_on: localDate(email.date),
+      platform: 'Company website', review: 'Created from an email in your Jobs label' }, 'Gmail', userId);
+    c = q1('SELECT company_id, name FROM company WHERE name = ?', [d.company]);
+    created = true;
+  }
+  if (!c) return { status: 'ignored', app_id: null, company: null, kind };
 
-/** An email straight from a recruiter/company: save the recruiter, log the email, move the stage. */
-export function applyRecruiterEmail(email) {
-  const companies = q('SELECT company_id, name FROM company');
-  const c = matchCompany(email, companies);
-  if (!c) return { status: 'ignored', app_id: null, company: null };
   const apps = q(`SELECT a.app_id, a.current_stage, s.sort_order, s.is_terminal, j.title
                     FROM application a JOIN job_posting j ON j.job_id = a.job_id JOIN stage s ON s.stage_code = a.current_stage
-                   WHERE j.company_id = ? ORDER BY s.is_terminal, a.applied_on DESC`, [c.company_id]);
-  if (!apps.length) return { status: 'ignored', app_id: null, company: c.name };
-  const text = `${email.subject}\n${email.text}`.toLowerCase();
+                   WHERE j.company_id = ? AND a.user_id IS ? ORDER BY s.is_terminal, a.applied_on DESC`, [c.company_id, userId]);
+  if (!apps.length) return { status: 'ignored', app_id: null, company: c.name, kind };
+  const text = `${e.subject}\n${e.text}`.toLowerCase();
   const a = apps.find(x => text.includes(x.title.toLowerCase())) || apps[0];
 
-  // recruiter → contact table (new, or fill in a missing phone)
-  let contactId = null;
-  const rec = recruiterFrom(email);
-  if (rec) {
-    const known = q1('SELECT contact_id, phone FROM contact WHERE company_id = ? AND (lower(email) = ? OR full_name = ? COLLATE NOCASE)',
-      [c.company_id, rec.email, rec.full_name]);
-    if (known) {
-      contactId = known.contact_id;
-      if (!known.phone && rec.phone) run('UPDATE contact SET phone = ? WHERE contact_id = ?', [rec.phone, contactId]);
-    } else {
-      contactId = run('INSERT INTO contact (company_id, full_name, role_title, email, phone) VALUES (?,?,?,?,?)',
-        [c.company_id, rec.full_name, 'Recruiter / HR', rec.email, rec.phone]).lastInsertRowid;
-    }
-  }
-  const kind = kindOf(text);
-  if (kind === 'rejected' && !a.is_terminal) run("UPDATE application SET current_stage = 'REJECTED' WHERE app_id = ?", [a.app_id]);
-  if (kind === 'interview' && !a.is_terminal && a.sort_order < STAGE_ORDER.INTERVIEW)
-    run("UPDATE application SET current_stage = 'INTERVIEW' WHERE app_id = ?", [a.app_id]);
+  const rec = recruiterFrom(e) || (parseIcs(email.ics)?.organizer ? { full_name: parseIcs(email.ics).organizer.name || parseIcs(email.ics).organizer.email, email: parseIcs(email.ics).organizer.email } : null);
+  const contactId = saveRecruiter(c.company_id, userId, rec);
+  const event_id = kind === 'rejected' || kind === 'offer' ? null : saveEvent(a.app_id, userId, email, extractEvent(e), contactId);
+  if (KIND_STAGE[kind]) advance(a.app_id, KIND_STAGE[kind]);
   // logging the inbound email also moves a waiting application to "HR / recruiter screen" (trigger trg_inbound_contact)
   run(`INSERT INTO interaction (app_id, contact_id, channel, direction, occurred_at, summary) VALUES (?, ?, 'Email', 'Inbound', ?, ?)`,
     [a.app_id, contactId, localDateTime(email.date), `Email from ${rec?.full_name || c.name}: ${email.subject}`.slice(0, 300)]);
-  return { status: 'updated', app_id: a.app_id, company: c.name, kind };
+  return { status: created ? 'imported' : 'updated', app_id: a.app_id, company: c.name, kind, event_id };
+}
+
+/** Gmail search → the messages not read before. */
+async function freshMessages(token, userId, query, max) {
+  const ids = await listMessageIds(token, query, max);
+  const fresh = ids.filter(id => !q1('SELECT 1 FROM email_import WHERE message_id = ?', [`${userId}:${id}`]));
+  return { scanned: ids, fresh };
 }
 
 const running = new Set();
@@ -193,44 +270,50 @@ export async function syncUser(userId) {
     const token = await accessToken(userId);
     const u = q1('SELECT last_sync_at FROM app_user WHERE user_id = ?', [userId]);
     const days = u.last_sync_at ? 30 : FIRST_SYNC_DAYS;
-    const ids = await listMessageIds(token, gmailQuery(days), u.last_sync_at ? 200 : 500);
-    const fresh = ids.filter(id => !q1('SELECT 1 FROM email_import WHERE message_id = ?', [id]));
+    const first = !u.last_sync_at;
 
+    // 1) job-site emails  2) emails from companies / recruiters  3) everything in your Jobs label
+    const searches = [
+      await freshMessages(token, userId, gmailQuery(days), first ? 500 : 200),
+      await freshMessages(token, userId, recruiterQuery(days), first ? 300 : 100),
+      await freshMessages(token, userId, labelQuery(JOBS_LABEL, days), first ? 500 : 200),
+    ];
+    const inLabel = new Set(searches[2].fresh);
+    const ids = [...new Set(searches.flatMap(s => s.fresh))];
     const emails = [];
-    for (let i = 0; i < fresh.length; i += 8) {                       // 8 at a time, to be gentle on the API
-      emails.push(...await Promise.all(fresh.slice(i, i + 8).map(id => getMessage(token, id))));
+    for (let i = 0; i < ids.length; i += 8) {                         // 8 at a time, to be gentle on the API
+      emails.push(...await Promise.all(ids.slice(i, i + 8).map(id => getMessage(token, id))));
     }
-    emails.sort((x, y) => x.date.localeCompare(y.date));             // oldest first: "applied" before "viewed"
+    emails.sort((x, y) => x.date.localeCompare(y.date));             // oldest first: "applied" before "test" before "offer"
 
-    const summary = { scanned: ids.length, new_emails: emails.length, imported: 0, updated: 0, duplicate: 0, review: 0, ignored: 0 };
+    const summary = { scanned: new Set(searches.flatMap(s => s.scanned)).size, new_emails: emails.length,
+                      imported: 0, updated: 0, duplicate: 0, review: 0, ignored: 0, recruiter: 0, events: 0 };
     for (const e of emails) {
-      const p = parseJobEmail(e);
-      let out;
-      try { out = applyEmail(p, e); }
-      catch (err) { console.error('Could not import', e.subject, err.message); out = { status: 'review', app_id: null }; }
+      const fromSite = PLATFORMS.some(p => p.match.test(e.from));
+      let p = null, out;
+      run('UPDATE app_clock SET event_at = ? WHERE id = 1', [localDateTime(e.date)]);   // history rows get the email's date
+      try {
+        if (fromSite) {
+          p = parseJobEmail(e);
+          out = applyEmail(p, e, userId);
+        } else {
+          out = applyRecruiterEmail(e, userId, { create: inLabel.has(e.id) });
+          if (out.status !== 'ignored') summary.recruiter++;
+        }
+      } catch (err) {
+        console.error('Could not import', e.subject, err.message);
+        out = { status: fromSite ? 'review' : 'ignored', app_id: null };
+      } finally {
+        run('UPDATE app_clock SET event_at = NULL WHERE id = 1');
+      }
       summary[out.status]++;
+      if (out.event_id) summary.events++;
       run(`INSERT OR IGNORE INTO email_import (message_id, user_id, received_at, sender, subject, snippet, platform, kind,
-                                               company, role, location, job_url, status, app_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        [e.id, userId, localDateTime(e.date), e.from.slice(0, 200), e.subject.slice(0, 300), e.snippet.slice(0, 300),
-         p?.platform || null, p?.kind || 'other', p?.company || null, p?.role || null, p?.location || null, p?.job_url || null,
-         out.status, out.app_id]);
-    }
-    // 2) emails sent directly by recruiters / companies you applied to
-    const rids = await listMessageIds(token, recruiterQuery(days), u.last_sync_at ? 100 : 300);
-    const rfresh = rids.filter(id => !q1('SELECT 1 FROM email_import WHERE message_id = ?', [id]));
-    const remails = [];
-    for (let i = 0; i < rfresh.length; i += 8) remails.push(...await Promise.all(rfresh.slice(i, i + 8).map(id => getMessage(token, id))));
-    remails.sort((x, y) => x.date.localeCompare(y.date));
-    summary.scanned += rids.length; summary.new_emails += remails.length; summary.recruiter = 0;
-    for (const e of remails) {
-      let out;
-      try { out = applyRecruiterEmail(e); } catch (err) { console.error('Recruiter email failed', e.subject, err.message); out = { status: 'ignored', app_id: null }; }
-      if (out.status === 'updated') { summary.updated++; summary.recruiter++; } else summary.ignored++;
-      run(`INSERT OR IGNORE INTO email_import (message_id, user_id, received_at, sender, subject, snippet, platform, kind, company, status, app_id)
-           VALUES (?,?,?,?,?,?,'Email',?,?,?,?)`,
-        [e.id, userId, localDateTime(e.date), e.from.slice(0, 200), e.subject.slice(0, 300), e.snippet.slice(0, 300),
-         out.kind || 'other', out.company || null, out.status, out.app_id]);
+                                               company, role, location, job_url, status, app_id, event_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [`${userId}:${e.id}`, userId, localDateTime(e.date), e.from.slice(0, 200), e.subject.slice(0, 300), e.snippet.slice(0, 300),
+         p?.platform || 'Email', p?.kind || out.kind || 'other', p?.company || out.company || null, p?.role || null,
+         p?.location || null, p?.job_url || null, out.status, out.app_id, out.event_id || null]);
     }
 
     run("UPDATE app_user SET last_sync_at = datetime('now','localtime') WHERE user_id = ?", [userId]);
@@ -248,35 +331,39 @@ r.post('/gmail/sync', async (req, res) => {
 
 // ---------- review list: emails that could not be read clearly ----------
 r.get('/gmail/review', (req, res) => {
-  if (!needUser(req, res)) return;
+  const u = needUser(req, res);
+  if (!u) return;
   res.json(q(`SELECT message_id, received_at, platform, kind, subject, snippet, company, role, location, job_url
-                FROM email_import WHERE status = 'review' ORDER BY received_at DESC LIMIT 50`));
+                FROM email_import WHERE status = 'review' AND user_id = ? ORDER BY received_at DESC LIMIT 50`, [u.user_id]));
 });
 
 r.post('/gmail/review/:id/add', (req, res) => {
-  if (!needUser(req, res)) return;
-  const row = q1("SELECT * FROM email_import WHERE message_id = ? AND status = 'review'", [req.params.id]);
+  const u = needUser(req, res);
+  if (!u) return;
+  const row = q1("SELECT * FROM email_import WHERE message_id = ? AND status = 'review' AND user_id = ?", [req.params.id, u.user_id]);
   if (!row) return res.status(404).json({ error: 'That email is no longer in the review list.' });
   const company = String(req.body?.company || '').trim(), role = String(req.body?.role || '').trim();
   if (!company || !role) return res.status(400).json({ error: 'Company and role are both needed.' });
   const p = { platform: row.platform, appPlatform: row.platform === 'LinkedIn' ? 'LinkedIn Easy Apply' : 'Job portal',
     kind: row.kind === 'other' ? 'applied' : row.kind, company, role, location: row.location, job_url: row.job_url };
-  let out = applyEmail(p, { date: row.received_at.replace(' ', 'T'), subject: row.subject });
-  if (out.status === 'review' && p.kind !== 'applied') out = applyEmail({ ...p, kind: 'applied' }, { date: row.received_at.replace(' ', 'T'), subject: row.subject });
+  const em = { date: row.received_at.replace(' ', 'T') + '+05:30', subject: row.subject };
+  let out = applyEmail(p, em, u.user_id);
+  if (out.status === 'review' && p.kind !== 'applied') out = applyEmail({ ...p, kind: 'applied' }, em, u.user_id);
   run('UPDATE email_import SET company = ?, role = ?, status = ?, app_id = ? WHERE message_id = ?',
     [company, role, out.status === 'review' ? 'review' : out.status, out.app_id, row.message_id]);
   res.json(out);
 });
 
 r.post('/gmail/review/:id/dismiss', (req, res) => {
-  if (!needUser(req, res)) return;
-  run("UPDATE email_import SET status = 'ignored' WHERE message_id = ?", [req.params.id]);
+  const u = needUser(req, res);
+  if (!u) return;
+  run("UPDATE email_import SET status = 'ignored' WHERE message_id = ? AND user_id = ?", [req.params.id, u.user_id]);
   res.json({ ok: true });
 });
 
 // ---------- background: re-check Gmail every few hours for everyone who connected ----------
 export function startAutoSync() {
-  const hours = Number(process.env.GMAIL_AUTO_SYNC_HOURS || 3);
+  const hours = Number(process.env.GMAIL_AUTO_SYNC_HOURS || 1);
   if (!googleConfigured() || !(hours > 0)) return;
   setInterval(async () => {
     for (const { user_id } of q('SELECT user_id FROM app_user WHERE refresh_token IS NOT NULL')) {

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { api } from './api.js';
 import Lookup from './components/Lookup.jsx';
 import GmailPanel from './components/GmailPanel.jsx';
+import Upcoming from './components/Upcoming.jsx';
 import Tracker from './components/Tracker.jsx';
 import Pipeline from './components/Pipeline.jsx';
 import DatabaseView from './components/DatabaseView.jsx';
@@ -28,7 +29,7 @@ export default function App() {
 
   useEffect(() => {
     api.health()
-      .then(h => setStatus({ state: 'ok', text: `Connected · ${h.engine} ${h.version}` }))
+      .then(h => setStatus({ state: h.backup?.enabled && !h.backup.saving ? 'error' : 'ok', text: `Connected · ${h.engine} ${h.version}${h.backup?.enabled ? (h.backup.saving ? ' · saved to Turso' : ' · Turso copy could not be loaded: changes are not being saved') : ''}` }))
       .catch(e => setStatus({ state: 'error', text: e.message }));
   }, [version]);
 
@@ -51,12 +52,14 @@ export default function App() {
       <header className="mast">
         <div className="brand"><h1>Job<span>Trail</span></h1><small>Application ledger</small></div>
         <div className="save" data-s={status.state === 'ok' ? 'saved' : status.state === 'error' ? 'error' : 'saving'} role="status">
-          <i></i><span>{status.state === 'error' ? 'Database offline' : status.text}</span>
+          <i></i><span>{status.state === 'error' ? (status.text.includes('Turso') ? 'Not saving' : 'Database offline') : status.text}</span>
         </div>
       </header>
       {status.state === 'error' && <div className="err-banner">{status.text}</div>}
 
       <GmailPanel version={version} onChanged={refresh} />
+
+      <Upcoming version={version} onOpen={id => setDrawer({ type: 'app', id, focusCall: false })} />
 
       <Lookup version={version} onOpen={openApp} />
 
