@@ -274,15 +274,15 @@ export async function syncUser(userId) {
 
     // 1) job-site emails  2) emails from companies / recruiters  3) everything in your Jobs label
     const searches = [
-      await freshMessages(token, userId, gmailQuery(days), first ? 500 : 200),
-      await freshMessages(token, userId, recruiterQuery(days), first ? 300 : 100),
-      await freshMessages(token, userId, labelQuery(JOBS_LABEL, days), first ? 500 : 200),
+      await freshMessages(token, userId, gmailQuery(days), first ? 100 : 60),
+      await freshMessages(token, userId, recruiterQuery(days), first ? 60 : 40),
+      await freshMessages(token, userId, labelQuery(JOBS_LABEL, days), first ? 100 : 60),
     ];
     const inLabel = new Set(searches[2].fresh);
     const ids = [...new Set(searches.flatMap(s => s.fresh))];
     const emails = [];
-    for (let i = 0; i < ids.length; i += 8) {                         // 8 at a time, to be gentle on the API
-      emails.push(...await Promise.all(ids.slice(i, i + 8).map(id => getMessage(token, id))));
+    for (let i = 0; i < ids.length; i += 3) {                         // 8 at a time, to be gentle on the API
+      emails.push(...await Promise.all(ids.slice(i, i + 3).map(id => getMessage(token, id)))); await new Promise(r => setTimeout(r, 500));
     }
     emails.sort((x, y) => x.date.localeCompare(y.date));             // oldest first: "applied" before "test" before "offer"
 

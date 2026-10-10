@@ -18,7 +18,7 @@ export function authUrl(redirectUri, state) {
 }
 
 async function call(url, opts = {}) {
-  const res = await fetch(url, opts);
+  const res = await (async () => { for (let i = 0; ; i++) { const r = await fetch(url, opts); const slow = r.status === 429 || (r.status === 403 && /quota|rate/i.test(await r.clone().text())); if (!slow || i >= 4) return r; await new Promise(x => setTimeout(x, 3000 * 2 ** i)); } })();
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
     const msg = body.error_description || body.error?.message || body.error || `Google request failed (${res.status})`;
