@@ -8,7 +8,7 @@ img{max-width:100%}
 [hidden]{display:none!important}
 
 :root{
-  --bg:#F6F7F5; --surface:#FFFFFF; --surface-2:#EFF1ED; --ink:#1D2330; --muted:#667085; --line:#E3E6E1;
+  --bg:#FCFCFB; --surface:#FFFFFF; --surface-2:#F4F5F2; --ink:#1D2330; --muted:#667085; --line:#E7E9E5;
   --accent:#2C6E63; --accent-soft:#E3EFEB; --accent-ink:#FFFFFF;
   --hero:#1F4D47; --hero-ink:#F4F7F5; --hero-muted:#B9CFC9;
   --wait:#5F6B7E; --wait-soft:#ECEEF2;
@@ -176,6 +176,16 @@ table.res td{font-variant-numeric:tabular-nums}
 .notes p{margin:0}
 .notes code{font-family:var(--f-mono);font-size:12.5px;background:var(--surface-2);padding:1px 6px;border-radius:5px}
 .mermaid{background:var(--surface);text-align:center}
+
+/* my data (Database tab) */
+.mydata{display:grid;gap:14px}
+.views{display:flex;gap:8px;flex-wrap:wrap}
+.mdhead{display:flex;gap:12px 20px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;margin-bottom:6px}
+.mdhead .sub{margin-bottom:0}
+.mdfilter{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:7px 14px;font-size:14px;min-width:0;width:220px}
+.mydata .resbox{max-height:560px}
+.mydata table.res td{white-space:nowrap}
+@media (max-width:640px){.mdfilter{width:100%}.mdhead .row{width:100%}}
 
 /* drawer */
 .scrim{position:fixed;inset:0;background:color-mix(in srgb,var(--ink) 35%,transparent);z-index:20}

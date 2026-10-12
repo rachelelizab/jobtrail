@@ -211,3 +211,16 @@ Google ends a test user's Gmail access after 7 days; they press **Sign in with G
 ```bash
 npm run build --prefix frontend      # static files in frontend/dist
 ```
+
+## Database design (for the report and viva)
+
+- **`docs/DATABASE.md`** — ER diagram, every table and column, keys and CHECK constraints, normalization,
+  indexes, views, triggers, transactions and security. Open it in VS Code and press **Cmd + Shift + V** to preview.
+- **`database/queries.sql`** — every query behind the buttons in the Database tab, plus viva queries
+  (EXPLAIN QUERY PLAN, constraint tests).
+- **Turso** — after each change the server also writes a *readable* copy of all tables, views and
+  triggers to your Turso database (Google tokens blanked). Open app.turso.tech → `jobtrail` →
+  **Edit Data** or the **SQL shell**. It is rebuilt from the app after every change, so edit data in the app, not in Turso.
+
+In the app, the **Database** tab shows your own data only: pick a view (All applications, Who called
+me?, Tests & interviews, Stage history …), search it, and download it as CSV. No SQL is typed in the app.

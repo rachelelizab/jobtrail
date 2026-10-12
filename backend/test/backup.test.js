@@ -57,3 +57,34 @@ test('if Turso cannot be reached at start, the saved copy is never overwritten',
   wipe();
   assert.equal(node(`const db = await import('./src/db.js'); console.log(db.q1('SELECT city FROM company WHERE company_id = 1').city); process.exit(0);`).split('\n').pop(), 'Mysuru');
 });
+
+test('Turso also gets a readable copy: real tables, views and triggers, without sign-in tokens', () => {
+  wipe();
+  const out = node(`
+    const db = await import('./src/db.js');
+    const { save } = await import('./src/backup.js');
+    db.run("INSERT INTO app_user (google_sub, email, name, refresh_token, access_token) VALUES ('g-1','a@b.com','A','SECRET-R','SECRET-A')");
+    db.run("UPDATE company SET city = 'Mangaluru' WHERE company_id = 1");
+    await save();
+    const { createClient } = await import('@libsql/client');
+    const t = createClient({ url: process.env.TURSO_DATABASE_URL });
+    const n = async sql => (await t.execute(sql)).rows[0].n;
+    console.log(JSON.stringify({
+      tables: await n("SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name IN ('application','company','interview_event','email_import','app_user')"),
+      views: await n("SELECT COUNT(*) n FROM sqlite_master WHERE type='view'"),
+      triggers: await n("SELECT COUNT(*) n FROM sqlite_master WHERE type='trigger'"),
+      apps: await n("SELECT COUNT(*) n FROM application"),
+      city: (await t.execute("SELECT city FROM company WHERE company_id = 1")).rows[0].city,
+      overview: await n("SELECT COUNT(*) n FROM v_application_overview"),
+      secrets: await n("SELECT COUNT(*) n FROM app_user WHERE refresh_token IS NOT NULL OR access_token IS NOT NULL"),
+    }));
+    process.exit(0);`);
+  const r = JSON.parse(out.split('\n').pop());
+  assert.equal(r.tables, 5);
+  assert.equal(r.views, 6);
+  assert.equal(r.triggers, 9);
+  assert.equal(r.apps, 8);
+  assert.equal(r.overview, 8);
+  assert.equal(r.city, 'Mangaluru');
+  assert.equal(r.secrets, 0, 'Google tokens never leave the server');
+});

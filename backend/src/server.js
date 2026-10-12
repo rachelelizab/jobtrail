@@ -9,6 +9,7 @@ import applications from './routes/applications.js';
 import misc from './routes/misc.js';
 import gmail, { startAutoSync } from './routes/gmail.js';
 import events from './routes/events.js';
+import reports from './routes/reports.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -18,6 +19,7 @@ app.use(express.json({ limit: '1mb' }));
 app.use('/api', misc);
 app.use('/api', gmail);
 app.use('/api', events);
+app.use('/api', reports);
 app.use('/api', applications);
 app.use('/api', (_req, res) => res.status(404).json({ error: 'No such API route.' }));
 
